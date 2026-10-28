@@ -2,7 +2,29 @@
 
 ## fastcore.aio
 
-> Bridging async and sync code: `run_sync`, `iter_sync`, `ctx_sync`, `maybe_await`, and `then`
+> Bridging async and sync code: `run_sync`, `iter_sync`, `ctx_sync`, `athreaded`, `maybe_await`, and `then`, plus `Debounce` for coalescing bursts of calls
+> 
+> ## Calling async code from sync code
+> 
+> Use these helpers to call async libraries without making your own code async:
+> 
+> - `run_sync` runs a coroutine and returns its result.
+> - `iter_sync` iterates an async generator.
+> - `ctx_sync` uses an async context manager in a `with` block.
+> 
+> They share an event loop on a background daemon thread, started on first use.
+> 
+> ## Calling sync code from async code
+> 
+> `athreaded` turns a blocking function into an async function that runs its body in a worker thread. This lets async code use blocking libraries without stalling the event loop.
+> 
+> `await maybe_await(o)` awaits `o` if it is awaitable and returns it unchanged otherwise.
+> 
+> `then(x, *fs)` applies each function to the preceding result. It returns a plain value when all steps are synchronous, or an awaitable if `x` or any step is awaitable.
+> 
+> This is useful for clients with both sync and async modes. A method can use `return then(self.gists.get(gid), ~Self.files.values(), first)` in either mode, without duplicating its body.
+> 
+> `then` awaits every awaitable returned by a step. Steps cannot pass awaitables through as data.
 > 
 > Docs: https://fastcore.fast.ai/aio.html.md
 
@@ -14,6 +36,9 @@
 
 - `@contextmanager def ctx_sync(acm)`
     Use async context manager `acm` in a plain `with` block
+
+- `@metadec def athreaded(f)`
+    Run `f` in a worker thread, awaitably; use as `@athreaded` or `@athreaded(executor=...)`
 
 - `def maybe_await(o)`
     Await `o` if needed, and return it
@@ -48,12 +73,33 @@
 - `def noopa(x, *args, **kwargs)`
     Do nothing (async)
 
+- `def wait_until(probe, what, timeout, sleep)`
+    Call `probe` until truthy, returning its first truthy result
+
+- `class Debounce`
+    Coalesce a burst of calls into one run of `f`, `wait` secs after calls stop (or `max_wait` secs after they start)
+
+    - `def __init__(self, f, wait, max_wait, on_error)`
+    - `def __call__(self)`
+    - `def cancel(self)`
+        Discard any pending fire (aborting one in flight)
+
+    - `def flush(self)`
+        Run any pending fire now instead of waiting; exceptions propagate to the caller
+
+
+- `def enable_async_magics(ip, fmt)`
+    Let line and cell magics on `ip` be async: coroutine results are awaited. Idempotent per shell.
+
+- `def disable_async_magics(ip)`
+    Undo `enable_async_magics` on `ip`
+
 ## fastcore.ansi
 
 > Filters for processing ANSI colors.
 
 - `def strip_ansi(source, term_queries)`
-    Remove ANSI escape codes from text.
+    Remove ANSI escape codes, including OSC sequences such as hyperlinks, from text.
 
 - `def ansi2html(text)`
     Convert ANSI colors to HTML colors.
@@ -61,14 +107,93 @@
 - `def ansi2latex(text)`
     Convert ANSI colors to LaTeX colors.
 
+## fastcore.apisurface
+
+> Signatures, documentation and grouped namespaces for generated API clients
+> 
+> `apisurface` builds signatures, docstrings and grouped namespaces from API operation metadata. Generated clients can use it to support tab completion and documentation through `?` and `doc()`. `fastspec` uses it for HTTP clients generated from specifications.
+> 
+> An operation record can be any object with these attributes:
+> 
+> - `name`, `summary` and `docs_url` describe the operation.
+> - `group` gives its namespace as a string, or a list for nested groups.
+> - `params` lists parameter names in order. `required_params` identifies required parameters.
+> - `param_types`, `param_defaults` and `param_docs` map parameter names to their metadata.
+> 
+> `mk_sig` creates an `inspect.Signature` with Python parameter names. `mk_doc` creates a docstring. `OpGroup` and `mk_groups` organize operations into namespaces with attribute access. `full_docs` combines their overviews into Markdown.
+> 
+> Docs: https://fastcore.fast.ai/apisurface.html.md
+
+- `def snake(s)`
+    Convert an identifier-ish string to snake_case.
+
+- `def sanitized_params(ps)`
+    Mapping from spec param names `ps` to valid Python identifiers; exact names win collisions.
+
+- `def mk_sig(op, sparams, defaults)`
+    An operation signature with parameter descriptions in `Annotated`; `defaults` makes those params optional
+
+- `def mk_doc(op, sig, sparams)`
+    Render operation docstring with summary, docs URL, and parameter hints.
+
+- `class OpGroup`
+    Namespace for grouped operations: each op is an attribute, and the repr lists them all
+
+    - `def __init__(self, name, ops)`
+    - `@property def __doc__`
+    - `def __dir__(self)`
+    - `def __allow__(self)`
+
+- `def mk_groups(ops)`
+    Nested tree of `OpGroup`s from ops, following each op's `group` path.
+
+- `def full_docs(groups)`
+    Markdown overview of every group and operation in a `mk_groups` tree.
+
 ## fastcore.basics
 
 > Basic functionality used in the fastai library
+> 
+> The staples used throughout fastai code, each replacing a common multi-line pattern with a one-liner.
+> 
+> Curried versions of the comparison and arithmetic functions in Python's `operator` module: `lt gt le ge eq ne add sub mul truediv is_ is_not in_ mod`. With two args they work like `operator`'s versions; with one arg they return a partial that binds it as the *second* argument, so `lt(3)` means "is less than 3" and `in_(vals)` means "is contained in `vals`". They read especially well as `cmp` arguments to `fastcore.test.test`, e.g. `test(x, valid, in_)`.
+> 
+> `store_attr()`, called inside `__init__`, stores the function's arguments as attributes of `self` in one line:
+> 
+> ```python
+> class Point:
+>     def __init__(self, x, y, scale=1): store_attr()
+> p = Point(1, 2)
+> test_eq((p.x, p.y, p.scale), (1, 2, 1))
+> ```
+> 
+> Utilities for functional programming or for defining, modifying, or debugging functions.
+> 
+> `~Self` is a concise alternative to `lambda` for a function that operates on a single object (note the capitalization!). Write the chain of attribute accesses, method calls, and indexing just as you would after a variable name, with `~Self` in its place, and the result is a plain function that runs the chain on its argument:
+> 
+> - `~Self.sum()` is `lambda o: o.sum()`
+> - `~Self.imag` is `lambda o: o.imag`
+> - `~Self[1]` is `lambda o: o[1]`
+> - `~Self.sum().real` is `lambda o: o.sum().real`
+> - `~Self` alone is the identity, `lambda o: o`
+> 
+> Since `.`, `()`, and `[]` bind tighter than `~`, the whole chain builds first and `~` then converts it to a function, so the chain never needs its own parentheses: `map(~Self.imag, nums)` works as written.
+> 
+> fastai code builds classes incrementally across a notebook. A class's methods often appear far from the class itself. `@patch` adds a function to an existing class as a method, and picks the class from the function's `self:` annotation:
+> 
+> ```python
+> @patch
+> def total(self:Point): return self.x + self.y
+> test_eq(Point(3, 4).total(), 7)
+> ```
 > 
 > Docs: https://fastcore.fast.ai/basics.html.md
 
 - `def ifnone(a, b)`
     `b` if `a` is None else `a`
+
+- `def req(x, msg, exc)`
+    `x` unless it's `None`, in which case raise `exc(msg)`
 
 - `def maybe_attr(o, attr)`
     `getattr(o,attr,o)`
@@ -141,7 +266,7 @@
     Raises exception `e` (by default `StopIteration`)
 
 - `def gen(func, seq, cond)`
-    Like `(func(o) for o in seq if cond(func(o)))` but handles `StopIteration`
+    Map `func` over `seq`, stopping at the first result that fails `cond`; handles `StopIteration`
 
 - `def chunked(it, chunk_sz, drop_last, n_chunks, pad, pad_val)`
     Return batches from iterator `it` of size `chunk_sz` (or return `n_chunks` total)
@@ -193,7 +318,10 @@
     Get the return annotation of `func`
 
 - `def signature_ex(obj, eval_str)`
-    Backport of `inspect.signature(..., eval_str=True` to <py310
+    Like `inspect.signature`, but a declared `Parameter.empty` default is kept as a default
+
+- `def union2tuple(t)`
+    The member types of a `Union` or `X|Y` annotation, otherwise `t` unchanged
 
 - `def argnames(f, frame)`
     Names of arguments to function or frame `f`
@@ -201,14 +329,32 @@
 - `def with_cast(f)`
     Decorator which uses any parameter annotations as preprocessing functions
 
-- `def store_attr(names, self, but, cast, store_args, **attrs)`
+- `def store_attr(names, self, but, cast, **attrs)`
     Store params named in comma-separated `names` from calling context into attrs in `self`
+
+- `def init_args(o)`
+    The `__init__` parameters of `o` that it holds as attributes, with their current values
 
 - `def attrdict(o, *ks)`
     Dict from each `k` in `ks` to `getattr(o,k)`
 
 - `def properties(cls, *ps)`
     Change attrs in `cls` with names in `ps` to properties
+
+- `def id_words(s, splits)`
+    Split identifier `s` into words: punctuation chars in `splits` are separators (runs kept as empty words, so they survive a round trip), 'c' splits case boundaries
+
+- `def to_camel(s, splits)`
+    camelCase form of `s`; acronym words after the first keep their casing
+
+- `def to_pascal(s, splits)`
+    PascalCase form of `s`; every word Title-cased (acronyms flatten)
+
+- `def to_kebab(s, splits)`
+    kebab-case form of `s`
+
+- `def to_snake(s, splits)`
+    snake_case form of `s`
 
 - `def camel2words(s, space)`
     Convert CamelCase to 'spaced words'
@@ -218,6 +364,9 @@
 
 - `def snake2camel(s)`
     Convert snake_case to CamelCase
+
+- `def humanize(x)`
+    Concise human-readable `x`, e.g. 9200 -> '9.2k'
 
 - `def class2attr(self, cls_name)`
     Return the snake-cased name of the class; strip ending `cls_name` if it exists.
@@ -230,6 +379,9 @@
 
 - `def hasattrs(o, attrs)`
     Test whether `o` contains all `attrs`
+
+- `def setattrs(dest, flds, src)`
+    Set fields `flds` on `dest` from `src`, a dict or an object
 
 - `def try_attrs(obj, *attrs)`
     Return first attr that exists in `obj`
@@ -304,9 +456,6 @@
 - `def merge(*ds)`
     Merge all dictionaries in `ds`
 
-- `def range_of(x)`
-    All indices of collection `x` (i.e. `list(range(len(x)))`)
-
 - `def groupby(x, key, val)`
     Like `itertools.groupby` but doesn't need to be sorted, and isn't lazy, plus some extensions
 
@@ -339,6 +488,9 @@
 
 - `def filter_ex(iterable, f, negate, gen, **kwargs)`
     Like `filter`, but passing `kwargs` to `f`, defaulting `f` to `noop`, and adding `negate` and `gen`
+
+- `def range_of(a, b, step)`
+    All indices of collection `a`, if `a` is a collection, otherwise `range`
 
 - `def renumerate(iterable, start)`
     Same as `enumerate`, but returns index as 2nd element instead of 1st
@@ -383,10 +535,10 @@
     Iterate and generate a tuple with a flag for last value.
 
 - `def first_match(lst, f, default)`
-    First element of `lst` matching predicate `f`, or `default` if none
+    Index of the first element of `lst` matching predicate `f`, or `default` if none
 
 - `def last_match(lst, f, default)`
-    Last element of `lst` matching predicate `f`, or `default` if none
+    Index of the last element of `lst` matching predicate `f`, or `default` if none
 
 - `def joins(sep, its)`
     Sugar for `sep.join(map(str, its))`
@@ -527,6 +679,9 @@
 - `def str2date(s)`
     `date.fromisoformat` with empty string handling
 
+- `def str2dt(s)`
+    `datetime.fromisoformat` with `Z` suffix and empty string handling
+
 - `def typed(_func)`
     Decorator to check param and return types at runtime, with optional casting
 
@@ -536,14 +691,40 @@
 - `def exec_import(mod, sym)`
     Import `sym` from `mod` in a new environment
 
+- `def kindsort(ps)`
+    Params sorted by `Parameter.kind`
+
+- `def sig_with_params(sig, remove, **updates)`
+    Copy of `sig` with `remove`d params dropped and `updates` added, kind-sorted
+
+- `def xdumps(o, **kwargs)`
+    `json.dumps`, using `__json__` methods when available
+
+- `def revive_dates(o)`
+    Recursively convert ISO8601-formatted strings in a decoded JSON tree into `datetime` objects
+
 ## fastcore.docments
 
 > Document parameters using comments.
 > 
+> A docment is a comment beside a parameter in a function signature. It keeps the parameter's description next to its name, type and default. `docments(f)` reads these comments for documentation tools and CLIs such as `fastcore.script`:
+> 
+> ```python
+> def add(
+>     a:int,  # The first operand
+>     b=1,    # The second operand
+> ) -> int:   # The sum
+>     "Add `a` to `b`"
+>     return a + b
+> test_eq(docments(add), {'a': 'The first operand', 'b': 'The second operand', 'return': 'The sum'})
+> ```
+> 
+> For longer descriptions, put comment lines above the parameter. `docments` also reads `typing.Annotated` string metadata and NumPy-style docstrings. Pass `full=True` to retrieve each parameter's default, type and docment together.
+> 
 > Docs: https://fastcore.fast.ai/docments.html.md
 
 - `def docstring(sym)`
-    Get docstring for `sym` for functions ad classes
+    Get documentation from an object, its constructor, or its callable implementation
 
 - `def parse_docstring(sym)`
     Parse a numpy-style docstring in `sym`
@@ -555,7 +736,7 @@
     Get source code for dataclass `s`
 
 - `def get_source(s)`
-    Get source code for string, function object or dataclass `s`
+    Get source for a function, callable implementation, dataclass, or source string
 
 - `def get_name(obj)`
     Get the name of `obj`
@@ -567,7 +748,7 @@
     The underlying type and metadata tuple of an `Annotated`, else `(anno, ())`
 
 - `def docments(s, full, eval_str, returns, args_kwargs)`
-    Get docments for `s`
+    Get parameter and return documentation from comments, `Annotated` metadata, and NumPy docstrings
 
 - `def sig_source(obj)`
     Full source of signature line(s) for a function or class.
@@ -590,8 +771,6 @@
 
 - `class DocmentText`
     - `def __init__(self, obj, maxline, docstring)`
-    - `@property def params`
-    - `def __str__(self)`
 
 - `def sig2str(func, maxline)`
     Generate function signature with docments as comments
@@ -650,6 +829,28 @@
 
 > The `L` class and helpers for it
 > 
+> `add_docs` attaches docstrings to a class and its methods from a dictionary. `docs` is its decorator form. Both check that every public method has documentation.
+> 
+> `coll_repr` shows a collection's length and a preview of its items. `flatmap(f, xs)` applies `f` to each item and concatenates the results.
+> 
+> `L` extends Python's list operations with indexing inspired by [NumPy](http://www.numpy.org/). You can index with an integer, slice, collection of integers or boolean mask. Methods such as `map`, `filter`, `sorted`, `unique`, `itemgot` and `attrgot` return an `L`:
+> 
+> ```python
+> t = L(1,2,3)
+> t.append(4)
+> test_eq(t[[0,3]], [1,4])
+> test_eq(t[[False,True,False,True]], [2,4])
+> test_eq(t.map(lambda o:o*2), [2,4,6,8])
+> ```
+> 
+> Call `L.map(int)` on the class to get a function that converts an iterable's items to integers. This curried form works with `map`, `filter`, `groupby`, `argwhere`, `argfirst`, `first`, `last`, `sorted`, `reduce`, `partition`, `takewhile`, `dropwhile` and `accumulate`.
+> 
+> `star(f)` unpacks the last argument before calling `f`. In `map`, that argument is the item. In `reduce`, it is the item after the accumulator. `rstar` reverses the unpacked arguments.
+> 
+> `L` has methods for `itertools` operations including `cycle`, `takewhile`, `dropwhile`, `accumulate`, `pairwise`, `batched`, `compress`, `permutations` and `combinations`.
+> 
+> `partition` returns two collections according to a predicate. `flatten` recursively flattens nested iterables, leaving strings intact.
+> 
 > Docs: https://fastcore.fast.ai/foundation.html.md
 
 - `@contextmanager def working_directory(path)`
@@ -702,6 +903,7 @@
 
     - `def __eq__(self, b)`
     - `def __iter__(self)`
+    - `def __json__(self)`
     - `def __contains__(self, b)`
     - `def __reversed__(self)`
     - `def __invert__(self)`
@@ -801,6 +1003,42 @@
 - `@patch def combinations(self, r)`
     Same as `itertools.combinations`
 
+## fastcore.funccall
+
+> Generate JSON schemas from Python functions, call functions from LLM tool-use requests, and convert schemas back to callables
+> 
+> Docs: https://fastcore.fast.ai/funccall.html.md
+
+- `def handle_type(t, defs)`
+    Convert a type annotation to JSON Schema
+
+- `def union_schema(t, defs)`
+    Schema for union type `t`: its schema-representable members, unwrapped if only one, `anyOf` otherwise
+
+- `def get_schema(f, pname, evalable, skip_hidden, name)`
+    Generate JSON schema for a class, function, or method
+
+- `def coerce_inputs(func, inputs)`
+    Coerce inputs based on function type annotations, repairing common LLM container mistakes
+
+- `def get_schema_nm(nm, ns, dot2dash, **kwargs)`
+    Get schema for symbol `nm` in namespace `ns`, preserving the full dotted name
+
+- `def call_func(fc_name, fc_inputs, ns, raise_on_err)`
+    Call `fc_name`, a function or its name in namespace `ns`, with the given `fc_inputs`.
+
+- `def call_func_async(fc_name, fc_inputs, ns, raise_on_err)`
+    Awaits `fc_name`, a function or its name in namespace `ns`, with the given `fc_inputs`.
+
+- `def mk_param(orig, props, req, pynm)`
+    Create a `Parameter` for `orig` with schema `props`
+
+- `def schema2sig(tool)`
+    Convert json schema `tool` to a `Signature`
+
+- `def mk_tool(dispfn, tool)`
+    Create a callable function from a JSON schema tool definition
+
 ## fastcore.imghdr
 
 > Recognize image file formats based on their first few bytes.
@@ -886,6 +1124,27 @@
 
 > Metaclasses
 > 
+> These metaclasses customize object construction:
+> 
+> - `FixSigMeta` preserves the constructor signature for introspection and tab completion. The other metaclasses inherit from it.
+> - `PrePostInitMeta` calls `__pre_init__` before `__init__` and `__post_init__` afterward.
+> - `AutoInit` is a `PrePostInitMeta` mixin that calls `super().__init__`.
+> - `NewChkMeta` makes `C(x)` return `x` when `x` is already a `C` and there are no other arguments.
+> - `BypassNewMeta` casts an object of `_bypass_type` to the new class without copying it.
+> 
+> See this [introduction to metaclasses](https://realpython.com/python-metaclasses/) for background.
+> 
+> `use_kwargs` and `use_kwargs_dict` replace `**kwargs` in a signature with parameters from a list or dictionary. `funcs_kwargs` lets a class accept method overrides as constructor arguments.
+> 
+> `@delegates(base)` adds `base`'s optional parameters to a wrapper's displayed signature for introspection and tab completion. Use `keep=True` to retain `**kwargs` and `but` to exclude parameters. On a class, `@delegates()` uses the superclass constructor:
+> 
+> ```python
+> def basefn(a, b=2, c=3): ...
+> @delegates(basefn)
+> def wrapper(d, **kwargs): ...
+> test_eq(str(inspect.signature(wrapper)), '(d, *, b=2, c=3)')
+> ```
+> 
 > Docs: https://fastcore.fast.ai/meta.html.md
 
 - `def test_sig(f, b)`
@@ -940,17 +1199,31 @@
 - `def funcs_kwargs(as_method)`
     Replace methods in `cls._methods` with those from `kwargs`
 
+- `def metadec(d)`
+    Decorator for decorators: make `d(f, *, ...)` usable as `@d` or `@d(**params)`
+
 - `def splice_sig(wrapper, fn, *skips)`
     Replace `*args`/`**kwargs` in wrapper's sig with fn's params (minus skips)
 
 ## fastcore.nbio
 
-> Reading and writing Jupyter notebooks
+> Reading, writing, and running Jupyter notebooks
+> 
+> The cell tools apply `fastcore.tools`' string editing primitives to one notebook cell's source. They match that module's file tools, with the same operations and parameters, but take `path, cell_id` where the file tools take `path`. Every editor, including the structural `cell_ast_replace`, returns a diff of its change. `view_cell` shows a cell's source with optional line numbers or exhash addresses.
+> 
+> `fastcore.editskill` documents the naming and parameter conventions shared across the editing toolkit, and re-exports this module's editing tools.
+> 
+> `diff_cells` compares two versions of a cell sequence, such as an open notebook and its file on disk, or a dialog and an edited copy. It yields the edits that turn one into the other. It aligns items by `id`, and works with any objects that have an `.id`, not just cells. Each edit is a *block* covering a contiguous run of deletions, insertions or in-place changes. An applier can handle each block in one step, keeping inserted items in order. An aligned pair counts as changed when `key(item)` differs between the two sides.
 > 
 > Docs: https://fastcore.fast.ai/nbio.html.md
 
+- `def jupyter_json_default(obj)`
+    JSON serializer fallback matching Jupyter Python object handling.
+
 - `class NbCell`
-    - `def __init__(self, idx, cell)`
+    - `def __init__(self, idx, cell, lang)`
+    - `def __setattr__(self, k, v)`
+    - `def __setitem__(self, k, v)`
     - `def set_source(self, source)`
     - `def parsed_(self)`
     - `def __hash__(self)`
@@ -960,13 +1233,34 @@
     Convert dict `js` to an `AttrDict`,
 
 - `def read_nb(path)`
-    Return notebook at `path`
+    Return notebook at `path` (expands `~`)
 
 - `def mk_cell(text, cell_type, **kwargs)`
     Create an `NbCell` containing `text`
 
 - `def new_nb(cells, meta, nbformat, nbformat_minor)`
     Returns an empty new notebook
+
+- `def cell_frontmatter(s, strvals)`
+    Frontmatter mapping from a cell source that is entirely a literal `---` block, else {}
+
+- `def md_frontmatter(s, strvals)`
+    Frontmatter synthesized from an H1-formatted markdown cell: `# title`, `> description`, and `- key: value` lines
+
+- `def nb_frontmatter(nb, strvals)`
+    Frontmatter from `nb`, merged lowest-to-highest from its `metadata.nbdev` mapping (values verbatim), first markdown cell (literal `---` block, or `# title` synthesis), and first raw cell anywhere
+
+- `def first_code_ln(code_list, re_pattern, lang)`
+    get first line number where code occurs, where `code_list` is a list of code
+
+- `def dir_tag(meta)`
+    Meta-form nbdev directives in `meta` as a compact `[k k=v]` bracket tag, or `''` if none
+
+- `@patch def directive(self, name, default)`
+    Value of directive `name` (`''` if bare), or `default` if absent
+
+- `@patch def remove_directives(self, quarto)`
+    Strip directives from source, keeping cell magics; with `quarto`, instead materialize every directive (metadata included) as a Quarto option line
 
 - `def nb2dict(d, k)`
     Convert parsed notebook to `dict`
@@ -975,10 +1269,34 @@
     Convert `nb` to a `str`
 
 - `def write_nb(nb, path)`
-    Write `nb` to `path`
+    Write `nb` to `path` (expands `~`)
 
-- `def apply_controls(text)`
-    Apply \r and \b to text, returning processed result
+- `def find_id(items, k, unit)`
+    The item with id `k`; a missing or ambiguous id raises `KeyError` naming the problem
+
+- `def cell_edit(f, name)`
+    Wrap text editor `f` as a cell editing function: `path, cell_id` addressing, diff-or-error return
+
+- `def view_cell(path, cell_id, start_line, end_line, nums, lnhashs, incl_out, trunc_out)`
+    View a cell's source, optionally limited to 1-based line range
+
+- `def diff_cells(a, b, key)`
+    Yield block `CellEdit`s that turn `a` into `b`, aligned by item `id`
+
+- `def validate_cell(cell, idx)`
+    Raise `ValueError` for structural problems in notebook cell dict `cell`; returns it unchanged if fine
+
+- `def validate_nb(nb)`
+    Raise `ValueError` for structural problems in notebook `nb`; returns it unchanged if fine
+
+- `def repair_cell(cell, idx)`
+    Fix deterministic structural problems in `cell`, returning a list of repairs made
+
+- `def repair_nb(nb)`
+    Fix deterministic structural problems in `nb`, returning a list of repairs made
+
+- `def join_out(d)`
+    Join Jupyter's list-of-lines output data into one string
 
 - `def mk_stream(name, text)`
     Helper to create an output stream dict
@@ -995,14 +1313,20 @@
 - `def concat_streams(outputs)`
     Concatenate stream outputs by name (stdout/stderr), preserving execute_result at end
 
+- `@delegates(preferred_out) def preferred_msg_out(out, **kwargs)`
+    Preferred mime type and content for any Jupyter output dict (stream, error, or data-bearing)
+
 - `def render_output(out)`
     Convert a single output dict to an HTML string
 
 - `def render_outputs(outputs)`
     Render a full list of outputs, concatenating streams first.
 
-- `def render_text(outputs, html1st)`
-    Render notebook outputs to concise text, using XML-ish tags when multiple outputs are present.
+- `def render_text(outputs, html1st, tb_maxlen)`
+    Render notebook outputs to concise ANSI-stripped text, using XML-ish tags when multiple outputs are present; `tb_maxlen` caps over-long error-traceback lines
+
+- `def item2xml(typ, content, out, id, meta, **attrs)`
+    A notebook cell or dialog message as concise XML: content, then an `<out>` section when `out` is non-empty
 
 - `def cell2xml(cell, ids, incl_out)`
     Convert NbCell to concise XML format
@@ -1033,18 +1357,74 @@
 - `@patch def md(self, source, idx, after, before, **kwargs)`
     Add a new cell with `source` at `idx` (default: end), or `after`/`before` a cell id
 
-- `@patch def find(self, pat, cell_type)`
-    Find cells with source matching regex `pat`
-
 - `@patch def move(self, src_ids, after, before)`
     Move cells with `src_ids` after/before a cell id, or to end
 
-- `@patch def view(self, id, nums)`
-    Show cell source with optional line numbers
+- `def prev_line(txt, maxlen, pre, sep)`
+    One-line preview capped at `maxlen`, with blank-line runs shown as `¶` and a trailing count of omitted characters
+
+- `class CellRow`
+    Snapshot of one cell, shown as `id:t[directives]:source` (t: c=code m=markdown r=raw); a context row from a find shows `-` in place of its final `:`
+
+    - `def __init__(self, c, maxlen, kind)`
+    - `def __repr__(self)`
+
+- `class CellRows`
+    - `def __repr__(self)`
+
+- `@patch def summary(self, maxlen)`
+    One `CellRow` line per cell
+
+- `def summary_nb(path, maxlen)`
+    One snapshot line per cell of the notebook at `path`
+
+- `@patch def to_dict(self)`
+    The plain dict form of the held notebook (`nb2dict`): the representation layer
+
+- `class Found`
+    Mixin for find-result containers: `matched` ids, id-only indexing, and match/context kinds
+
+    - `def __init__(self, items, matched)`
+    - `def kind(self, o)`
+    - `def __getitem__(self, k)`
+
+- `class FoundCells`
+    Find results: cells indexed by id (exact or unique prefix), shown as `CellRow` lines with context rows marked
+
+    - `def __repr__(self)`
+
+- `@patch def find_cells(self, pat, cell_type, ids, context)`
+    Find live cells matching all the given criteria, plus `context` neighbouring cells
+
+- `def deep_merge(d, u)`
+    Copy of `d` updated by `u`
+
+- `def update_cell(path, cell_id, mergemeta, export, **kwargs)`
+    Update a cell's attributes, metadata, or export directive
+
+- `def fm_default_eval(fm, default_eval)`
+    Participation default for cells without their own `eval` directive: the notebook-level `eval` directive in frontmatter mapping `fm` if given, else `default_eval`
+
+- `def does_cell_eval(cell, default)`
+    Does `cell` participate in a non-interactive run? Decided by its `eval` directive, or `default` when the directive is absent or unrecognized; a cell tagged `skip-execution` (nbclient's skip tag) never participates
+
+- `def select_cells(nb, *msgids)`
+    Select code cells from `nb` by cell id or unique prefix, in the order given; cells named in `msgids` always run, others follow the `eval` cascade
+
+- `def run_cell(shell, raw_cell, store_history, silent, shell_futures, cell_id)`
+    Run one cell on `shell`: transform, await `run_cell_async` on the calling loop, and fire the post events; returns the `ExecutionResult`
+
+- `def msg2out(msg)`
+    nbformat-style output dict for Jupyter iopub message dict `msg`
+
+- `def msgs2outs(msgs)`
+    nbformat-style output dicts for the output messages in `msgs`, skipping other message types
 
 ## fastcore.net
 
 > Network, HTTP, and URL functions
+> 
+> Every URL function here goes through `urlopen`. It quotes the URL, sends `url_default_headers`, and encodes `data`. On an HTTP error it raises the status-specific exception for the code, such as `HTTP404NotFoundError` or `HTTP503ServiceUnavailableError`. Each is a subclass of `HTTP4xxClientError` or `HTTP5xxServerError`. Its message includes the response body. The module also has TCP and Unix-socket clients and servers, and helpers that wait for a condition or a free port.
 > 
 > Docs: https://fastcore.fast.ai/net.html.md
 
@@ -1095,20 +1475,42 @@
 - `@threaded def recv_once(host, port)`
     Spawn a thread to receive a single HTTP request and store in `d['r']`
 
+- `def waitfor(f, timeout, msg)`
+    Call `f` every 0.1s until it returns truthy, raising `TimeoutError` with `msg` after `timeout` secs
+
+- `def waitfor_async(f, timeout, msg)`
+    Async version of `waitfor`
+
+- `def is_port_free(port, host)`
+    Is `port` free on `host`?
+
+- `def free_port(host)`
+    A free TCP port on `host`, picked by the OS
+
+- `def wait_port_free(port, host, max_wait)`
+    Wait for `port` to be free on `host`
+
+- `def wait_port_free_async(port, host, max_wait)`
+    Async wait for `port` to be free on `host`
+
 ## fastcore.parallel
 
 > Threading and multiprocessing functions
 > 
+> `parallel(f, items)` applies `f` to each item using a process pool. Set `threadpool=True` to use threads. Set `n_workers` to control concurrency, or to 0 for serial execution when debugging. Optional arguments include a `progress` bar, a `pause` between starts, and `return_exceptions` to collect errors. `parallel_async` runs work concurrently with asyncio.
+> 
+> `@threaded` runs a function in a background thread and returns the thread. Read its `result` attribute after it finishes. Set `process=True` to run in a process. `startthread` and `startproc` start their decorated functions immediately.
+> 
 > Docs: https://fastcore.fast.ai/parallel.html.md
 
-- `def threaded(process, daemon)`
+- `@metadec def threaded(f)`
     Run `f` in a `Thread` (or `Process` if `process=True`), and returns it
 
-- `def startthread(f, daemon)`
+- `@metadec def startthread(f)`
     Like `threaded`, but start thread immediately
 
-- `def startproc(f, daemon)`
-    Like `threaded(True)`, but start Process immediately
+- `@metadec def startproc(f)`
+    Like `threaded(process=True)`, but start Process immediately
 
 - `class ThreadPoolExecutor`
     Same as Python's ThreadPoolExecutor, except can pass `max_workers==0` for serial execution
@@ -1125,11 +1527,17 @@
 - `def parallel(f, items, *args, **kwargs)`
     Applies `func` in parallel to `items`, using `n_workers`
 
-- `def parallel_async(f, items, *args, **kwargs)`
+- `def parallel_async_gen(f, items, *args, **kwargs)`
+    Yield `(index,result)` pairs as `f` applied to each of `items` completes, in completion order
+
+- `@delegates(parallel_async_gen) def parallel_async_dict(f, items, *args, **kwargs)`
+    Apply `f` to `items` in parallel, returning `{index: result}` in completion order
+
+- `@delegates(parallel_async_dict, but=['cancel_on_exit']) def parallel_async(f, items, *args, **kwargs)`
     Applies `f` to `items` in parallel using asyncio and a semaphore to limit concurrency.
 
-- `def bg_task(coro)`
-    Like `asyncio.create_task` but logs exceptions for fire-and-forget tasks
+- `def bg_task(coro, on_err)`
+    Like `asyncio.create_task`, but keeps the task alive and reports exceptions, for fire-and-forget tasks
 
 ## fastcore.py2pyi
 
@@ -1152,7 +1560,134 @@
 
 ## fastcore.script
 
-> A fast way to turn your python function into a script.
+> Creates a CLI from a Python function decorated with `call_parse`.
+> 
+> The function's parameters become the script's arguments, its docstring becomes the program description, and its [docments](https://fastcore.fast.ai/docments.html) comments become the help for each argument.
+> 
+> Here's a complete example (`examples/test_fastcore.py` in the fastcore repo):
+> 
+> ```python
+> from fastcore.script import *
+> @call_parse
+> def main(
+>     msg:str, # The message
+>     upper:bool # Convert to uppercase?
+> ):
+>     "Print `msg`, optionally converting to uppercase"
+>     print(msg.upper() if upper else msg)
+> ```
+> 
+> `call_parse` provides argument parsing, help, defaults and error handling. Copy the example into a file and run it without adding an `if __name__ == "__main__"` block:
+> 
+> ```
+> $ examples/test_fastcore.py --help
+> usage: test_fastcore.py [-h] [--upper] msg
+> 
+> Print `msg`, optionally converting to uppercase
+> 
+> positional arguments:
+>   msg         The message
+> 
+> options:
+>   -h, --help  show this help message and exit
+>   --upper     Convert to uppercase? (default: False)
+> ```
+> 
+> You can also call the function normally from Python, including in a Jupyter notebook.
+> 
+> ## Annotated params
+> 
+> Use `typing.Annotated` for `argparse` options that docments can't express:
+> 
+> ```python
+> from fastcore.script import *
+> from typing import Annotated
+> @call_parse
+> def main(msg:Annotated[str, "The message"],
+>          upper:Annotated[store_true, "Convert to uppercase?"]):
+>     "Print `msg`, optionally converting to uppercase"
+>     print(msg.upper() if upper else msg)
+> ```
+> 
+> The first element is the parameter's type. The first string in its metadata provides help text. Add a metadata dictionary to set `action`, `nargs`, `const`, `choices`, `required` or `version` arguments for `argparse.add_argument`.
+> 
+> The dictionary also accepts `opt`. Set it to `True` for a flag or `False` for a positional parameter. Without `opt`, parameters with defaults become flags.
+> 
+> ## Short flags
+> 
+> The first capital letter in an optional parameter's name declares a short flag:
+> 
+> - `Resume:int=None` gives `-r` and `--resume`.
+> - `sUggest:str=None` gives `-u` and `--suggest`.
+> - Names without capitals have only a long flag.
+> 
+> Long flags use lowercase and hyphens, such as `--cache-dir` for `cache_dir`. Python calls keep the parameter's spelling, such as `main(Resume=3)`. Positional parameters have no flags and keep their names unchanged.
+> 
+> ## Positional params
+> 
+> Parameters without defaults are positional. Other parameters become flags. `*args` accepts zero or more positional values. Parameters after it are flags. CLI calls ignore `**kwargs`.
+> 
+> Pass parameter names in `pos` to `call_parse` or `anno_parser` to keep them positional even with defaults. Omitted values use those defaults. Command-line order follows the signature, regardless of the order in `pos`. A boolean flag cannot appear in `pos` because it takes no value.
+> 
+> ## Param types
+> 
+> A `bool` parameter is a `store_true` flag defaulting to `False`. If its default is `True` it becomes a `--no-` prefixed `store_false` flag instead, so passing the flag turns it off. Use `bool_arg` as the type when you want an explicit `--flag true|false` argument that honors its default.
+> 
+> `argparse` normally repeats an option's name as its value placeholder, such as `--path PATH`. Here help shows the type instead, such as `--path (str)`.
+> 
+> `anno2str` formats the type name. It displays `Path` as `path`. Unions list each type once and omit `str` when `path` is present. For example, `Path|str` displays as `path`.
+> 
+> Enums show their choices as `{choice,...}`. Positional parameters show their names.
+> 
+> Union types such as `int|str` try each type in turn, and `enum` types such as those from `str_enum` become argparse choices.
+> 
+> `parse_cli` is the argument-handling half of a `call_parse` run. It parses `sys.argv` for `func`. It returns the positional arguments, the keyword arguments, and whether `--pdb` was passed. `call_parse` then calls `func` with them. Use `parse_cli` to write a decorator that reads arguments as `call_parse` does and runs `func` some other way. [warmpy](https://github.com/AnswerDotAI/warmpy) runs it in a warm background process.
+> 
+> ## The CLI entry point
+> 
+> `call_parse` parses `sys.argv` when you run the function's file directly with `python foo.py`, `python -m foo` or `%run foo.py`. It also parses arguments on a zero-argument call from the top-level body of a directly run file. Console-script wrappers use this form.
+> 
+> Calls from a notebook, REPL or another function are ordinary Python calls. This includes calls from another `call_parse` function.
+> 
+> CLI calls return integers, including booleans, as exit codes. They discard other return values. Python calls preserve return values. Raise `CliError` to report an error message to CLI users.
+> 
+> Set `nested=True` when one CLI launches another. The outer parser removes the arguments it recognizes from `sys.argv`, leaving the rest for the inner CLI:
+> 
+> ```sh
+> myrunner --keyword 1 script.py -- <script.py args>
+> ```
+> 
+> `--` is optional in some invocations. Use it to separate the applications' arguments and avoid cases such as:
+> 
+> ```sh
+> myrunner script.py -h
+> ```
+> 
+> `myrunner` handles `-h` here instead of passing it to `script.py`.
+> 
+> Use `is_cli` to distinguish CLI execution from Python calls. Here the CLI prints a result that Python callers receive as a return value:
+> 
+> ```python
+> @call_parse
+> def sum_args(a:int=0, b:int=0):
+>     "Add `a` and `b`"
+>     if is_cli(): print(a+b)
+>     else: return a+b
+> 
+> test_eq(sum_args(1,2), 3)  # Python call: returns the value, prints nothing
+> ```
+> 
+> Raise `CliError` when a command cannot continue. CLI execution prints its message to stderr and exits with status 1. Python callers can catch the exception:
+> 
+> ```python
+> @call_parse
+> def show(fname:str=None):
+>     "Print `fname`"
+>     if fname is None: raise CliError("fname is required")
+>     print(fname)
+> 
+> with expect_fail(CliError, contains='fname is required'): show()
+> ```
 > 
 > Docs: https://fastcore.fast.ai/script.html.md
 
@@ -1165,21 +1700,33 @@
 - `def bool_arg(v)`
     Annotation type giving `bool` behavior for CLI args
 
-- `def anno_parser(func, prog)`
+- `def anno2str(t)`
+    Display name for CLI annotation `t`, e.g. for an argparse metavar
+
+- `def anno_parser(func, prog, pos)`
     Look at params (with type/docments/`Annotated` annotations) in func and return an `ArgumentParser`
 
 - `def args_from_prog(func, prog)`
     Extract args from `prog`
 
-- `def call_parse(func, nested)`
+- `def parse_cli(func, nested, pos)`
+    Positional args, keyword args, and the `--pdb` flag that `sys.argv` gives for `func`
+
+- `def call_parse(func, nested, pos)`
     Decorator to create a simple CLI from `func` using `anno_parser`
 
 - `def is_cli(func)`
     True if a `call_parse` CLI run is in progress, optionally checking that `func` is the function being run
 
+- `class CliError`
+    Raised when a command can't continue: a CLI run exits with the message, a Python call sees the exception
+
+
 ## fastcore.style
 
 > Fast styling for friendly CLIs.
+> 
+> Build an ANSI terminal style by chaining attributes on the exported `S` object, then apply it by calling it with a string. `S.blue.bold('hi')` returns the escaped string, which nests correctly inside other styles. A chain is a plain object that can be defined once and reused. Tab completion on `S.` lists the available colors and effects.
 > 
 > Docs: https://fastcore.fast.ai/style.html.md
 
@@ -1205,13 +1752,38 @@
 
 > Helper functions to quickly write tests in notebooks
 > 
+> All the helpers here wrap `test(a,b,cmp)`, an `assert cmp(a,b)` that shows both values when the comparison fails, rather than a bare `AssertionError`.
+> 
+> To check that code fails as expected, use `test_fail(f, contains=..., exc=...)` for a callable, or `expect_fail` as a context manager, which also accepts `regex`:
+> 
+> ```python
+> def _fail(): raise ValueError('oops')
+> test_fail(_fail, contains='oops')
+> with expect_fail(ValueError, regex='o+ps'): _fail()
+> ```
+> 
+> `cmp` can be any callable, and fastcore's curried operators (`in_`, `gt`, `is_`, and friends from `fastcore.basics`) make good ones: `test(x, valid, in_)` beats a bare `assert x in valid` by showing both values when it fails:
+> 
+> ```python
+> test(2, [1,2,3], in_)
+> test('b', 'abc', in_)
+> ```
+> 
+> `test_eq` compares with `equals`, which works by content across types: generators are consumed, and lists, tuples, sets, dicts, numpy arrays, torch tensors, and DataFrames all compare their contents, including mixed cases like an array against a plain list:
+> 
+> ```python
+> test_eq([1,2], map(int,[1,2]))
+> test_eq(array([1,2]), [1,2])
+> test_eq(dict(a=1,b=2), dict(b=2,a=1))
+> ```
+> 
 > Docs: https://fastcore.fast.ai/test.html.md
 
 - `def test_fail(f, msg, contains, exc, args, kwargs)`
     Fails with `msg` unless `f()` raises an exception of type `exc` and (optionally) has `contains` in `e.args`; `expect_fail` is normally preferred
 
-- `@contextmanager def expect_fail(exc, contains, msg)`
-    Context manager that fails with `msg` unless body raises `exc` optionally containing `contains`
+- `@contextmanager def expect_fail(exc, contains, msg, regex)`
+    Context manager that fails with `msg` unless body raises `exc`, optionally containing `contains` or matching `regex`
 
 - `def test(a, b, cmp, cname)`
     `assert` that `cmp(a,b)`; display inputs and `cname or cmp.__name__` if it fails
@@ -1247,7 +1819,7 @@
     Test there is a figure displayed in `ax`
 
 - `class ExceptionExpected`
-    Context manager that tests if an exception is raised
+    Context manager that tests if an exception is raised. Deprecated: use `expect_fail` instead
 
     - `def __init__(self, ex, regex)`
     - `def __enter__(self)`
@@ -1255,55 +1827,69 @@
 
 ## fastcore.tools
 
-> Helpful tools for running cli commands and reading, modifying, and creating files in python. This is used primarily for AI's in tool loops for automating tasks involving the filesystem.
+> Text and file editing primitives shared by the fastai editing tools
+> 
+> The text editors take a string and return the edited text. Invalid edits raise `ValueError`. File editors read and write a path and return a diff. Aidialog provides corresponding message editors.
+> 
+> Read `fastcore.editskill` for the editing toolkit's naming, parameter and workflow conventions. It exposes these tools alongside the notebook editors from `fastcore.nbio`.
+> 
+> `line_hash`, `lnhash` and `lnhash_at` create [exhash](https://answerdotai.github.io/exhash) addresses without depending on the exhash package. Addresses use `lineno|hash|`. The hash is the low 12 bits of CRC32, encoded as two Base64url characters (`A–Z`, `a–z`, `0–9`, `-`, `_`), high six bits first.
+> 
+> File editors take the path first and return a unified diff. An unchanged result returns `none: No changes.` Invalid edits return `error: ...`.
+> 
+>     view_file('~/a/b.py', 3)
+>     create_file('~/a/b/c.py', 'content here')
+>     file_str_replace('myfile.py', 'old_name', 'new_name')
+>     file_del_lines('myfile.py', 2, 4)
+>     file_replace_lines('myfile.py', new_content=src)   # no line numbers: replace the entire contents
+> 
+> `file_str_replace`, `file_strs_replace` and `file_del_lines` support line ranges, `re_filter` and `invert_filter`. These work like ex's `g//` and `g!//` filters.
+> 
+> For Python syntax-tree replacements, use `ast_replace` or `file_ast_replace`. They accept ast-grep `(pattern, replacement)` rules with `$VAR` metavariables and require the optional `remold` package.
 > 
 > Docs: https://fastcore.fast.ai/tools.html.md
 
-- `def explain_exc(task)`
-    Convert an current exception to  an LLM friendly error message.
-
-- `def ensure(b, msg)`
-    Works like assert b, msg but raise ValueError and is not disabled when run with python -O
-
-- `def valid_path(path, must_exist, chk_perms)`
-    Return expanded/resolved Path, raising FileNotFoundError if must_exist and missing
-
-- `def run_cmd(cmd, argstr, disallow_re, allow_re)`
-    Run `cmd` passing split `argstr`, optionally checking for allowed argstr
-
-- `@llmtool def rg(argstr, disallow_re, allow_re)`
-    Run the `rg` command with the args in `argstr`
-
-- `@llmtool def sed(argstr, disallow_re, allow_re)`
-    Run the `sed` command with the args in `argstr` (e.g for reading a section of a file)
-
-- `@llmtool def view(path, view_range, nums, skip_folders)`
-    View directory or file contents with optional line range and numbers
-
-- `@llmtool def create(path, file_text, overwrite)`
-    Creates a new file with the given content at the specified path
-
-- `@llmtool def insert(path, insert_line, new_str)`
+- `def insert_line(text, insert_line, new_str)`
     Insert new_str at specified line number
 
-- `@llmtool def str_replace(path, old_str, new_str)`
-    Replace first occurrence of old_str with new_str in file
+- `def str_replace(text, old_str, new_str, start_line, end_line, n_matches, re_filter, invert_filter, use_regex)`
+    Replace occurrence(s) of old_str with new_str
 
-- `@llmtool def strs_replace(path, old_strs, new_strs)`
-    Replace for each str pair in old_strs,new_strs
+- `def strs_replace(text, old_strs, new_strs, start_line, end_line, n_matches, re_filter, invert_filter, use_regex)`
+    Replace multiple strings simultaneously
 
-- `@llmtool def replace_lines(path, start_line, end_line, new_content)`
-    Replace lines in file using start and end line-numbers (index starting at 1)
+- `def replace_lines(text, start_line, end_line, new_content)`
+    Replace line range with new content; the defaults replace the entire contents
 
-- `@llmtool def move_lines(path, start_line, end_line, dest_line)`
-    Move lines from start_line:end_line to before dest_line
+- `def del_lines(text, start_line, end_line, re_filter, invert_filter)`
+    Delete line range; deletion is destructive, so both line numbers must be given explicitly (`1, -1` for all lines)
 
-- `def get_callable()`
-    Return callable objects defined in caller's module
+- `def line_hash(line)`
+    2-char Base64url hash of `line`
+
+- `def lnhash(lineno, line)`
+    `lineno|hash|` exhash address for `line` at `lineno`
+
+- `def lnhash_at(s, line)`
+    `lineno|hash|` exhash address of line `line` of `s`
+
+- `def view_file(path, start_line, end_line, nums, lnhashs)`
+    Read file contents, optionally limited to 1-based line range
+
+- `def create_file(path, contents, overwrite)`
+    Create a new file with contents. Error if file exists, unless `overwrite`.
+
+- `def file_edit(f, name)`
+    Wrap text editor `f` as a file editing function: `path` addressing, diff-or-error return
+
+- `def ast_replace(text, repls)`
+    Apply ast-grep structural pattern replacements to python source
 
 ## fastcore.xdg
 
 > XDG Base Directory Specification helpers.
+> 
+> Each helper reads one `XDG_*` environment variable and falls back to the [spec](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html)'s default when the variable is unset or empty. The single-path helpers also fall back when the variable holds a relative path. The `*_DIRS` helpers split the variable on colons and drop relative entries. `xdg_runtime_dir` has no default and returns `None`.
 > 
 > Docs: https://fastcore.fast.ai/xdg.html.md
 
@@ -1330,7 +1916,29 @@
 
 ## fastcore.xml
 
-> Concise generation of XML.
+> Concise HTML generation and namespace-aware XML construction.
+> 
+> `ft(tag, *children, **attrs)` builds an `FT` tree for HTML generation. `to_xml` renders the tree. [FastHTML](https://fastht.ml) uses these functions to generate HTML.
+> 
+> Common tags have constructors such as `Div`, `P` and `A`. Pass attributes as keywords, using `klass` for `class` and `fr` for `for`. Underscores in attribute names become hyphens. You can also get and set attributes on the element.
+> 
+> To supply children after attributes, call the element: `Div(id='x')(child1, child2)`.
+> 
+> ```python
+> t = Div(P('hi', klass='a'), hx_get='/get')
+> test_eq(to_xml(t), '<div hx-get="/get">\n  <p class="a">hi</p>\n</div>\n')
+> test_eq(to_xml(Div(id='x')('child')), '<div id="x">child</div>\n')
+> ```
+> 
+> `E` creates XML elements from Python calls. Its `ns` argument maps namespace prefixes to URIs. The `prefix` and `attr_ns` arguments set the default prefixes for element and attribute names.
+> 
+> For example, `e = E('w', attr_ns='w', ns={'w': uri})` uses `w` for both defaults. Calling `e.tcW(type='dxa', w=2400)` creates a `w:tcW` element with `w:type` and `w:w` attributes.
+> 
+> `E` preserves the case of tag and attribute names. Use `prefix__name` for an explicitly prefixed attribute, or `attrs_` for literal attribute names.
+> 
+> Nesting an element under a different parent does not change its namespace bindings.
+> 
+> XML serialization escapes text and writes booleans as `true` or `false`. Override `attr_value` for other conventions. `.bytes()` returns UTF-8. `ft` and `to_xml` retain their HTML behavior.
 > 
 > Docs: https://fastcore.fast.ai/xml.html.md
 
@@ -1374,9 +1982,72 @@
 - `def mk_getattr(f)`
     Create a module `__getattr__` for mapping undefined attributes to kebab-case HTML tags via factory `f`
 
+- `class XML`
+    A detached XML expression with fixed namespace bindings.
+
+    - `def __init__(self, tag, children, attrs, ns)`
+    - `def __call__(self, *children)`
+        Append children and return this expression.
+
+
+- `@patch def render(self, inherited)`
+    Serialize, declaring the bindings not already in scope: `inherited` maps the prefixes bound where the markup will be inserted, `{}` declares every binding, and `None` renders a standalone document
+
+- `@patch def bytes(self)`
+    Serialize as UTF-8, without formatting whitespace.
+
+- `class E`
+    Create a namespace-bound XML factory: `e.tag(...)` and `e('tag', ...)` build detached expressions
+
+    - `def __init__(self, prefix)`
+    - `def __getattr__(self, name)`
+    - `def attr_value(self, tag, name, value)`
+        Serialize attribute `value` of `name` on `tag`; override to apply vocabulary rules such as `on`/`off`
+
+    - `def __call__(*children, **attrs)`
+        Build `name` (qualified by `prefix` unless it already has one) with `children` and `attrs`; call this directly for a tag that is not a Python identifier, such as `e('custom-name')`
+
+
 ## fastcore.xtras
 
 > Utility functions used in the fastai library
+> 
+> IO utilities include:
+> 
+> - `maybe_open`: accept a path or an open file, closing only files it opens.
+> - `run`: run a command and return stdout; raise `IOError` on failure.
+> - `atomic_save`: write a temporary file, then rename it over the destination.
+> - `untar_dir`: extract an archive, creating a containing directory when needed.
+> - `globtastic`: recursively find files with include and exclude filters.
+> 
+> `Config` reads and writes an ini file with one `DEFAULT` section. Access keys as attributes, items, or with `.get(key, default)`. Use `create=` to supply initial contents for a missing file.
+> 
+> `types=` converts values on read. `Path` values resolve relative to the config file's directory. `Config.find(name)` searches a directory and its parents for the file.
+> 
+> `dict2obj` converts nested dicts to `AttrDict` and lists to `L`, allowing attribute access such as `d.b.c`. `obj2dict` reverses the conversion:
+> 
+> ```python
+> d = dict2obj({'a':1, 'b':{'c':2, 'd':[3,4]}})
+> test_eq(d.b.c, 2)
+> test_eq(d.b.d[1], 4)
+> ```
+> 
+> These methods extend [Pathlib.Path](https://docs.python.org/3/library/pathlib.html#basic-use):
+> 
+> - `ls()` lists directory contents as an `L`, optionally filtered by MIME prefix or extension.
+> - `read_json`, `write_json`, and `read_jsonl` handle JSON files.
+> - `readlines` reads lines; `mk_write` creates parent directories before writing.
+> - `delete`, `relpath`, and `normpath` provide file deletion and path conversions.
+> 
+> Set `Path.BASE_PATH` to display paths relative to that directory.
+> 
+> Other utilities include:
+> 
+> - `exec_eval`: run a code string and return its last expression, like a notebook cell.
+> - `fenced`: wrap text in a Markdown fence longer than any fence character run in the body.
+> - `str_diff`: return a unified diff, or `''` for identical text.
+> - `unqid` and `friendly_name`: generate random Python identifiers or memorable word-based names.
+> - `flexicache`: cache results with configurable expiration policies.
 > 
 > Docs: https://fastcore.fast.ai/xtras.html.md
 
@@ -1387,7 +2058,7 @@
     Get exts for comma-separated or list `typ`; if not found in list, return list with just `types`.
     Supported: py, js, java, c, cpp, rb, r, ex, sh, web, doc, cfg
 
-- `def globtastic(path, recursive, maxdepth, symlinks, file_glob, file_re, folder_re, skip_file_glob, skip_file_re, skip_folder_re, func, ret_folders, sort, types, exts)`
+- `def globtastic(path, recursive, maxdepth, symlinks, file_glob, file_re, path_glob, path_re, folder_re, skip_file_glob, skip_file_re, skip_folder_re, func, ret_folders, sort, types, exts)`
     A more powerful `glob`, including regex matches, symlink handling, and skip parameters
 
 - `@fdelegates(globtastic) def pglob(path, func, **kwargs)`
@@ -1415,7 +2086,7 @@
     Generator of >=0 decoded json dicts, possibly with non-json ignored text at start and end
 
 - `def dumps(obj, **kw)`
-    Same as `json.dumps`, but uses `ujson` if available
+    Same as `json.dumps`
 
 - `def untar_dir(fname, dest, rename, overwrite, uid, gid)`
     untar `file` into `dest`, creating a directory if the root contains more than one item; recursively chown if `uid`/`gid` set
@@ -1506,11 +2177,17 @@
 - `def mapped(f, it)`
     map `f` over `it`, unless it's not listy, in which case return `f(it)`
 
+- `def take_lines(s, pat, atstart, atend, drop)`
+    Take contiguous lines matching `pat` from either end of `s`
+
 - `@patch def readlines(self, hint, encoding)`
     Read the content of `self`
 
 - `@patch def read_json(self, encoding, errors)`
     Same as `read_text` followed by `loads`
+
+- `@patch def read_jsonl(self, encoding, errors)`
+    Parse newline-delimited JSON, returning one object per line
 
 - `@patch def mk_write(self, data, encoding, errors, mode, uid, gid)`
     Make all parent dirs of `self`, and write `data`
@@ -1562,11 +2239,14 @@
 - `def asave_iter(g)`
     Like `save_iter`, but for async iterators
 
-- `def frontmatter(txt)`
-    Tuple of (dict, body) from frontmatter in `txt`; invalid/missing frontmatter returns ({}, txt)
+- `def strloader()`
+    `yaml.BaseLoader` extended to resolve `true`/`True`/`false`/`False`, and nothing else, to `bool`
+
+- `def frontmatter(txt, strvals)`
+    Tuple of (dict, body) from frontmatter in `txt`; missing frontmatter returns ({}, txt), malformed YAML raises
 
 - `def clean_cli_output(txt, strip)`
-    Clean CLI output by handling alternate screen, carriage returns, and ANSI escapes
+    Render CLI output as it appears on screen: alternate screen, `\r` overwrites, `\b` backspaces, and ANSI escapes
 
 - `def unqid(seeded)`
     Generate a unique id suitable for use as a Python identifier
@@ -1628,7 +2308,25 @@
     string format `s`, ignoring missing field errors, returning missing and extra fields
 
 - `def truncstr(s, maxlen, suf, space, sizevar)`
-    Truncate `s` to length `maxlen`, adding suffix `suf` if truncated
+    Truncate `s` to length `maxlen` (None: no limit), adding suffix `suf` if truncated; a callable `suf` gets the number of characters cut
+
+- `def trunc_ctr(s, mx)`
+    Truncate the middle of `s` so ~`mx` chars remain, marking the elision with its `humanize`d size
+
+- `class TruncatedString`
+    A `str` whose repr shows contents verbatim, middle-truncated to ~`mx` chars
+
+    - `def __new__(cls, s, mx)`
+    - `def __repr__(self)`
+
+- `def fenced(text, info, ch)`
+    Wrap `text` in a fence of `ch`, one char longer than any run of `ch` inside it (min 3)
+
+- `def fenced_blocks(text, ch)`
+    Top-level fenced blocks in `text`, fence-nesting-aware: the inverse of `fenced`
+
+- `def str_diff(a, b, n, names)`
+    Unified diff of `a` and `b`
 
 - `def utc2local(dt)`
     Convert `dt` from UTC to local time
